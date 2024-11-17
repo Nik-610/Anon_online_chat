@@ -5,68 +5,98 @@ BOT_TOKEN = 'YOUR_BOT_TOKEN'
 
 bot = telebot.TeleBot(BOT_TOKEN)
 
-users = {}
-freeid = None
-    
-# Обработчик команды /start
+# Хранилище данных
+active_users = {}  # Сопоставление пары собеседников
+waiting_user = None  # ID пользователя, который ждет собеседника
+
+# Отправка сообщения об ошибке
+def send_error(chat_id, text="Произошла ошибка. Попробуйте снова."):
+    bot.send_message(chat_id, text)
+
+# Функция для отправки сообщения пользователю
+def send_message_to_user(user_id, text):
+    try:
+        bot.send_message(user_id, text)
+    except telebot.apihelper.ApiException:
+        print(f"Ошибка отправки сообщения пользователю {user_id}")
+
+# Команда /start
 @bot.message_handler(commands=['start'])
-def send_gen(message):
-    bot.reply_to(message, "Привет! Используй или /find")
+def handle_start(message):
+    bot.reply_to(
+        message,
+        "Привет! Используй команду /find, чтобы найти собеседника, "
+        "или /stop, чтобы завершить общение."
+    )
 
-# Обработчик команды /find
+# Команда /find
 @bot.message_handler(commands=['find'])
-def find(message: types.Message):
-    global freeid
+def handle_find(message):
+    global waiting_user
+    user_id = message.chat.id
 
-    if message.chat.id not in users:
-        bot.send_message(message.chat.id, 'Поиск...')
+    # Если пользователь уже в активной беседе
+    if user_id in active_users:
+        bot.send_message(user_id, "Вы уже общаетесь с собеседником. Напишите /stop, чтобы завершить беседу.")
+        return
 
-        if freeid is None:
-            freeid = message.chat.id
-        else:
-            # Question:
-            # Is there any way to simplify this like `bot.send_message([message.chat.id, freeid], 'Founded!')`?
-            bot.send_message(message.chat.id, 'Найдено!')
-            bot.send_message(freeid, 'Найдено!')
+    # Если пользователь уже ожидает
+    if waiting_user == user_id:
+        bot.send_message(user_id, "Вы уже ожидаете собеседника. Пожалуйста, подождите.")
+        return
 
-            users[freeid] = message.chat.id
-            users[message.chat.id] = freeid
-            freeid = None
+    # Если есть другой ожидающий пользователь
+    if waiting_user is not None:
+        partner_id = waiting_user
+        active_users[user_id] = partner_id
+        active_users[partner_id] = user_id
+        waiting_user = None
 
-        print(users, freeid) # Debug purpose, you can remove that line
+        send_message_to_user(user_id, "Собеседник найден! Начните общение.")
+        send_message_to_user(partner_id, "Собеседник найден! Начните общение.")
     else:
-        bot.send_message(message.chat.id, 'Shut up!')
+        # Если никого нет в ожидании, добавить текущего пользователя
+        waiting_user = user_id
+        bot.send_message(user_id, "Поиск собеседника...")
 
-
-# Обработчик команды /stop
+# Команда /stop
 @bot.message_handler(commands=['stop'])
-def stop(message: types.Message):
-    global freeid
+def handle_stop(message):
+    global waiting_user
+    user_id = message.chat.id
 
-    if message.chat.id in users:
-        bot.send_message(message.chat.id, 'Остановка...')
-        bot.send_message(users[message.chat.id], 'Твой собеседник вышел -_-`...')
+    # Если пользователь в активной беседе
+    if user_id in active_users:
+        partner_id = active_users[user_id]
+        send_message_to_user(partner_id, "Собеседник завершил общение.")
+        send_message_to_user(user_id, "Вы завершили общение.")
 
-        del users[users[message.chat.id]]
-        del users[message.chat.id]
-        
-        print(users, freeid) # Debug purpose, you can remove that line
-    elif message.chat.id == freeid:
-        bot.send_message(message.chat.id, 'Остановка...')
-        freeid = None
+        del active_users[user_id]
+        del active_users[partner_id]
 
-        print(users, freeid) # Debug purpose, you can remove that line
+    # Если пользователь ждет собеседника
+    elif waiting_user == user_id:
+        bot.send_message(user_id, "Вы прекратили поиск собеседника.")
+        waiting_user = None
     else:
-        bot.send_message(message.chat.id, 'You are not in search!')
+        bot.send_message(user_id, "Вы не участвуете в поиске или общении.")
 
+# Пересылка сообщений между собеседниками
+@bot.message_handler(content_types=['text', 'photo', 'video', 'voice', 'sticker', 'document', 'location'])
+def handle_chat(message):
+    user_id = message.chat.id
 
-
-@bot.message_handler(content_types=['animation', 'audio', 'contact', 'dice', 'document', 'location', 'photo', 'poll', 'sticker', 'text', 'venue', 'video', 'video_note', 'voice'])
-def chatting(message: types.Message):
-    if message.chat.id in users:
-        bot.copy_message(users[message.chat.id], users[users[message.chat.id]], message.id)
+    # Если пользователь в активной беседе
+    if user_id in active_users:
+        partner_id = active_users[user_id]
+        try:
+            bot.copy_message(partner_id, user_id, message.id)
+        except telebot.apihelper.ApiException:
+            send_message_to_user(user_id, "Не удалось отправить сообщение. Возможно, собеседник недоступен.")
     else:
-        bot.send_message(message.chat.id, 'No one can hear you...')
+        bot.send_message(user_id, "Вы пока ни с кем не общаетесь. Напишите /find, чтобы найти собеседника.")
 
 # Запуск бота
-bot.polling()
+if __name__ == '__main__':
+    print("Бот запущен...")
+    bot.infinity_polling()
